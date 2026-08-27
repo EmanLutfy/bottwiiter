@@ -116,7 +116,7 @@ def build_caption(profile: ProfileInfo, username: str) -> str:
     # (the logo is sent as the photo itself; this caption becomes the
     # text below that photo).
     lines = [
-        f"<b>{_html_escape(name)}</b>",
+        f"<b><code>{_html_escape(name)}</code></b>",
         "",
         f"📝 Desc: {description_line}",
         "",
