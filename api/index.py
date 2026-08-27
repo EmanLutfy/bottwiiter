@@ -1,68 +1,253 @@
+
+Cloud
+Claude finished the response
+
+Read a file, created a file
+Read a file, created a file
+Sekarang api/index.py — let me translate that too.
+
+
+Read 10 files, edited 9 files, created 7 files · 14 notes
+Read 10 files, edited 9 files, created 7 files · 14 notes
+
+Read index.py
+
+Created index.py
+Sekarang README.md untuk projek webhook ni.
+
+
+Created README.md
+
+Ran command
+Sekarang translate x_profile_bot (bot.py, scraper.py, README.md).
+
+
+Ran command
+
+Ran command
+
+Read scraper.py
+Now patching the two bot-specific values that got overwritten by the copy.
+
+
+Edited scraper.py
+
+Edited scraper.py
+Now let's read bot.py and README.md for this project to translate them.
+
+
+Read bot.py
+
+Read README.md
+Now I'll rewrite bot.py fully in English, matching the style/wording already used in api/index.py.
+
+
+Created bot.py
+Now the README for x_profile_bot, translated to English, also updating the "how it works" section to match the actual current fallback chain (it was outdated even in Malay — mentioning only syndication+nitter, missing og-scrape and the bio-extraction/X API layers).
+
+
+Created README.md
+Verify syntax, then move to x_profile_web.
+
+
+Ran command
+Now let's read the x_profile_web project files.
+
+
+Read scraper.py
+
+Read app.py
+
+Read index.html
+
+Read README.md
+
+Created scraper.py
+Now app.py translated to English.
+
+
+Created app.py
+Now templates/index.html — translate visible text and the lang attribute.
+
+
+Edited index.html
+
+Edited index.html
+
+Edited index.html
+
+Edited index.html
+
+Edited index.html
+
+Edited index.html
+Now the README.md for x_profile_web, fully translated.
+
+
+Created README.md
+
+Finding files
+
+Read index.py
+
+Read vercel.json
+Translating the docstring in api/index.py (vercel.json has no natural-language text, no change needed).
+
+
+Edited index.py
+Now compile-check everything and clean up pycache across all three projects.
+
+
+Ran command
+
+Ran command
+No Malay/Indonesian text remains anywhere. All three projects compile cleanly. Sending the updated files now.
+
+
+Presented file(s)
+
+Presented file(s)
+
+Presented file(s)
+Semua 3 projek dah full English — tak ada lagi bahasa Melayu/Indonesia dalam code, comment, atau README:
+
+x_profile_bot (versi polling local) — scraper.py, bot.py, README.md
+x_profile_web (versi website/Vercel) — scraper.py, app.py, templates/index.html, api/index.py, README.md
+x_profile_telegram_webhook (bot yang live sekarang kat bottwiiter.vercel.app) — scraper.py, api/index.py, README.md
+Semua fail .py dah lulus py_compile check, dan saya dah grep semua tiga folder untuk perkataan Melayu/Indonesia biasa — tiada satu pun tinggal. Untuk bot yang live (webhook), tak perlu buat apa-apa lagi kat Vercel — cuma push/update fail scraper.py dan api/index.py yang baru ni ke repo GitHub korang dan Vercel akan auto-redeploy.
+
+
+Scraper
+PY 
+
+Bot
+PY 
+
+Readme
+Document · MD 
+
+Scraper
+PY 
+
+App
+PY 
+
+Index
+Code · HTML 
+
+Index
+PY 
+
+Readme
+Document · MD 
+
+Scraper
+PY 
+
+Index
+PY 
+
+Readme
+Document · MD 
+saya na versi tele yg latest kita buat je
+
+
+Found files, used a tool
+Found files, used a tool
+Ni dia — 4 fail lengkap untuk versi Telegram bot terkini (webhook, yang live kat bottwiiter.vercel.app):
+
+scraper.py
+api/index.py
+requirements.txt
+README.md
+Semuanya dah full English. Untuk update bot yang live tu, tinggal ganti scraper.py dan api/index.py dalam repo GitHub korang — Vercel akan auto-redeploy lepas tu, tak perlu setWebhook semula.
+
+
+Scraper
+PY 
+
+Index
+PY 
+
+Requirements
+TXT 
+
+Readme
+Document · MD 
+How is Claude doing this session?
+
+Write a message…
+
+
+Index · PY
 """
 api/index.py
 ------------
-Bot Telegram X Profile Lookup - versi WEBHOOK untuk Vercel (serverless).
-
-Kenapa webhook, bukan polling (macam bot.py versi asal):
-    Vercel (dan platform serverless lain) hanya jalankan kod bila ada
-    REQUEST masuk, lepas tu proses tu "mati". Bot mod polling
-    (run_polling()) perlukan proses yang idup BERTERUSAN untuk asyik
-    tanya Telegram "ada mesej baru tak?" - tak serasi dengan serverless.
-
-    Mod webhook plak, TELEGRAM sendiri yang "push" (POST) setiap mesej
-    baru terus ke satu URL bila-bila masa ada orang mesej bot - ni
-    padan 100% dengan cara serverless berfungsi (function run bila ada
-    request, reply, habis). Tiada proses berterusan diperlukan, dan
-    (lazimnya) percuma sepenuhnya di Vercel.
-
-NOTA PENTING pasal routing: fail ni sengaja TIADA vercel.json - guna
-zero-config routing Vercel (fail dalam api/ automatik reachable di
-/api/index). Handler kat bawah pun sengaja "catch-all" (terima sebarang
-path) supaya tak kisah macam mana Vercel assign path sebenar - ni elak
-isu routing yang pernah jadi sebelum ni (Flask dapat path lain drpd yang
-disangka bila guna vercel.json custom).
-
-Setup (rujuk README.md untuk penuh):
-    1. Deploy folder ni ke Vercel (import repo / vercel CLI).
-    2. Set environment variable BOT_TOKEN (dan WEBHOOK_SECRET - optional
-       tapi disyorkan) dalam Vercel project settings.
-    3. Daftar webhook SEKALI je lepas deploy:
+X Profile Lookup Telegram bot - WEBHOOK version for Vercel (serverless).
+ 
+Why webhook, not polling (like the original bot.py):
+    Vercel (and other serverless platforms) only runs code when a
+    REQUEST comes in, then the process "dies". Polling mode
+    (run_polling()) needs a process that stays alive CONTINUOUSLY to
+    keep asking Telegram "any new messages?" - not compatible with
+    serverless.
+ 
+    Webhook mode, on the other hand, has TELEGRAM itself "push" (POST)
+    every new message straight to one URL whenever someone messages the
+    bot - this matches 100% how serverless works (the function runs when
+    there's a request, replies, done). No continuous process needed, and
+    (usually) completely free on Vercel.
+ 
+IMPORTANT ROUTING NOTE: this file deliberately has NO vercel.json - it
+uses Vercel's zero-config routing (a file under api/ is automatically
+reachable at /api/index). The handler below is also deliberately a
+"catch-all" (accepts any path) so it doesn't matter what path Vercel
+actually assigns - this avoids a routing issue that happened before
+(Flask received a different path than expected when using a custom
+vercel.json).
+ 
+Setup (see README.md for the full version):
+    1. Deploy this folder to Vercel (import the repo / vercel CLI).
+    2. Set the BOT_TOKEN environment variable (and WEBHOOK_SECRET -
+       optional but recommended) in the Vercel project settings.
+    3. Register the webhook ONCE after deploying:
        curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<project>.vercel.app/api/index&secret_token=<WEBHOOK_SECRET>"
 """
-
+ 
 import html
 import io
 import logging
 import os
-
+ 
 from flask import Flask, jsonify, request
-
+ 
 from scraper import ProfileInfo, ProfileNotFound, download_avatar_png, extract_username, fetch_profile
-
+ 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
+ 
 app = Flask(__name__)
-
+ 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-# Optional tapi disyorkan: nilai rawak korang pilih sendiri, didaftarkan
-# sekali masa setWebhook (parameter secret_token). Telegram akan hantar
-# balik nilai ni dalam header "X-Telegram-Bot-Api-Secret-Token" setiap
-# kali dia panggil webhook ni - kita check ia sepadan supaya orang lain
-# tak boleh "spam" endpoint ni dengan payload palsu kalau URL ni bocor.
+# Optional but recommended: a random value you choose yourself,
+# registered once via setWebhook (the secret_token parameter). Telegram
+# will send this value back in the "X-Telegram-Bot-Api-Secret-Token"
+# header every time it calls this webhook - we check it matches so no
+# one else can "spam" this endpoint with fake payloads if the URL leaks.
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
-
+ 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
-# Guna 'requests' terus (bukan library python-telegram-bot) - lagi ringan
-# & senang jalan dalam function serverless yang sync/pendek hayat macam
-# ni, elak kerumitan asyncio python-telegram-bot dalam konteks WSGI sync.
+ 
+# Use 'requests' directly (not the python-telegram-bot library) - lighter
+# weight and easier to run in a short-lived, sync serverless function
+# like this, avoiding python-telegram-bot's asyncio complexity in a sync
+# WSGI context.
 import requests  # noqa: E402
-
-
+ 
+ 
 def tg_send_message(chat_id, text, parse_mode="HTML"):
     try:
         requests.post(
@@ -71,9 +256,9 @@ def tg_send_message(chat_id, text, parse_mode="HTML"):
             timeout=8,
         )
     except Exception:  # noqa: BLE001
-        logger.exception("Gagal sendMessage ke chat_id=%s", chat_id)
-
-
+        logger.exception("Failed to sendMessage to chat_id=%s", chat_id)
+ 
+ 
 def tg_send_photo(chat_id, photo_bytes: io.BytesIO, caption, parse_mode="HTML"):
     photo_bytes.seek(0)
     try:
@@ -84,34 +269,34 @@ def tg_send_photo(chat_id, photo_bytes: io.BytesIO, caption, parse_mode="HTML"):
             timeout=15,
         )
     except Exception:  # noqa: BLE001
-        logger.exception("Gagal sendPhoto ke chat_id=%s", chat_id)
-
-
+        logger.exception("Failed to sendPhoto to chat_id=%s", chat_id)
+ 
+ 
 def _html_escape(text: str) -> str:
     return html.escape(text, quote=False)
-
-
+ 
+ 
 def build_caption(profile: ProfileInfo, username: str) -> str:
     name = profile.name or f"@{username}"
-    # Semua nilai (termasuk description) di-wrap dalam tag <code> - dalam
-    # app Telegram, teks bergaya monospace/code macam ni boleh terus
-    # di-TAP untuk copy terus, tak payah select-all manual.
+    # All values (including description) are wrapped in a <code> tag -
+    # in Telegram apps, monospace/code-styled text like this can be
+    # TAPPED to copy directly, no manual select-all needed.
     description_line = (
         f"<code>{_html_escape(profile.description)}</code>"
         if profile.description
-        else "<i>(tiada bio)</i>"
+        else "<i>(no bio)</i>"
     )
     website_line = (
         f"<code>{_html_escape(profile.website)}</code>"
         if profile.website
-        else "<i>(tiada website dikesan)</i>"
+        else "<i>(no website detected)</i>"
     )
-    source_line = _html_escape(profile.source or "tidak diketahui")
+    source_line = _html_escape(profile.source or "unknown")
     profile_link = f"https://x.com/{profile.username}"
-
-    # Susunan ikut apa yang diminta: Desc -> Link X -> Username -> Website
-    # -> (logo dihantar sebagai gambar itu sendiri, caption ni jadi teks
-    # bawah gambar tu).
+ 
+    # Order as requested: Desc -> Link X -> Username -> Website ->
+    # (the logo is sent as the photo itself; this caption becomes the
+    # text below that photo).
     lines = [
         f"<b>{_html_escape(name)}</b>",
         "",
@@ -123,86 +308,88 @@ def build_caption(profile: ProfileInfo, username: str) -> str:
         "",
         f"🌐 Website: {website_line}",
         "",
-        f"<i>sumber: {source_line}</i>",
+        f"<i>source: {source_line}</i>",
     ]
     return "\n".join(lines)
-
-
+ 
+ 
 def handle_text_message(chat_id: int, text: str) -> None:
     text = (text or "").strip()
     if not text:
         return
-
+ 
     if text.startswith("/start"):
         tg_send_message(
             chat_id,
-            "Hai! Hantar je link profile X (Twitter) atau username, "
-            "contoh: https://x.com/openai atau @openai\n\n"
-            "Saya akan bagi balik nama, description, website, dan logo (PNG).",
+            "Hi! Just send an X (Twitter) profile link or username, "
+            "e.g. https://x.com/openai or @openai\n\n"
+            "I'll reply with the name, description, website, and logo (PNG).",
         )
         return
-
+ 
     username = extract_username(text)
     if not username:
         tg_send_message(
             chat_id,
-            "Tak dapat kesan username X dari mesej tu. Cuba hantar dalam bentuk "
-            "https://x.com/username, @username, atau username je.",
+            "Couldn't detect an X username in that message. Try sending it as "
+            "https://x.com/username, @username, or just the username.",
         )
         return
-
+ 
     try:
         profile = fetch_profile(username)
     except ProfileNotFound as exc:
         tg_send_message(chat_id, str(exc))
         return
     except Exception:  # noqa: BLE001
-        logger.exception("Ralat tak dijangka semasa fetch_profile(%s)", username)
-        tg_send_message(chat_id, "Ada ralat tak dijangka semasa cuba dapatkan profile ni. Cuba lagi sekejap.")
+        logger.exception("Unexpected error during fetch_profile(%s)", username)
+        tg_send_message(chat_id, "An unexpected error occurred while fetching this profile. Please try again shortly.")
         return
-
+ 
     caption = build_caption(profile, username)
-
+ 
     if profile.avatar_url:
         try:
             png_bytes = download_avatar_png(profile.avatar_url)
             tg_send_photo(chat_id, png_bytes, caption)
             return
         except Exception:  # noqa: BLE001
-            logger.exception("Gagal muat turun/hantar avatar untuk %s", username)
-
-    tg_send_message(chat_id, caption + "\n\n<i>(logo tak dapat dimuat turun)</i>")
-
-
+            logger.exception("Failed to download/send avatar for %s", username)
+ 
+    tg_send_message(chat_id, caption + "\n\n<i>(couldn't download the logo)</i>")
+ 
+ 
 @app.route("/", defaults={"_path": ""}, methods=["GET", "POST"])
 @app.route("/<path:_path>", methods=["GET", "POST"])
 def catch_all(_path):
     if request.method == "GET":
         return "X Profile Telegram bot webhook is alive.", 200
-
+ 
     if WEBHOOK_SECRET:
         incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
         if incoming != WEBHOOK_SECRET:
-            logger.warning("Webhook secret tak sepadan - request ditolak.")
+            logger.warning("Webhook secret mismatch - request rejected.")
             return jsonify(ok=False), 403
-
+ 
     update = request.get_json(silent=True) or {}
     message = update.get("message") or update.get("edited_message")
     if not message:
-        # Update jenis lain (contoh: callback_query, channel_post) - abaikan sahaja.
+        # Other update types (e.g. callback_query, channel_post) - just ignore them.
         return jsonify(ok=True)
-
+ 
     chat_id = message.get("chat", {}).get("id")
     text = message.get("text", "")
-
+ 
     if chat_id is None:
         return jsonify(ok=True)
-
+ 
     try:
         handle_text_message(chat_id, text)
     except Exception:  # noqa: BLE001
-        logger.exception("Ralat tak ditangkap semasa proses mesej dari chat_id=%s", chat_id)
-        tg_send_message(chat_id, "Maaf, ada ralat tak dijangka. Cuba hantar semula sekejap lagi.")
-
-    # Sentiasa balas 200 kat Telegram supaya ia tak retry/anggap webhook down.
+        logger.exception("Uncaught error while processing message from chat_id=%s", chat_id)
+        tg_send_message(chat_id, "Sorry, an unexpected error occurred. Please try sending it again shortly.")
+ 
+    # Always reply 200 to Telegram so it doesn't retry / think the webhook is down.
     return jsonify(ok=True)
+ 
+
