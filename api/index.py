@@ -109,7 +109,6 @@ def build_caption(profile: ProfileInfo, username: str) -> str:
         if profile.website
         else "<i>(no website detected)</i>"
     )
-    source_line = _html_escape(profile.source or "unknown")
     profile_link = f"https://x.com/{profile.username}"
 
     # Order as requested: Desc -> Link X -> Username -> Website ->
@@ -125,8 +124,6 @@ def build_caption(profile: ProfileInfo, username: str) -> str:
         f"👤 Username: <code>@{_html_escape(profile.username)}</code>",
         "",
         f"🌐 Website: {website_line}",
-        "",
-        f"<i>source: {source_line}</i>",
     ]
     return "\n".join(lines)
 
