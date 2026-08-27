@@ -43,6 +43,7 @@ when some account is "not found" even though it exists.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import logging
@@ -393,6 +394,156 @@ def _try_x_official_api(username: str) -> Optional[ProfileInfo]:
     )
 
 
+# Cookie-based access to X's own internal GraphQL API (OPTIONAL). This is
+# currently the ONLY genuinely free option that reliably includes the
+# separate "Website" field - it's the exact same API X's own web app
+# calls to render a profile page, so whatever X shows in the browser is
+# what this returns. It requires a *logged-in* X account's session
+# cookies (auth_token + ct0), NOT an official/paid API key.
+#
+# IMPORTANT: use a secondary/"burner" X account for this, never your main
+# personal account. Automated access like this is against X's Terms of
+# Service, and the account whose cookies are used here carries some risk
+# of being rate-limited or suspended. The bot itself is unaffected either
+# way - only that one X account is at risk.
+#
+# How to get these two values:
+#   1. Log into x.com in a normal browser, using the burner account.
+#   2. Open DevTools (F12) -> Application/Storage tab -> Cookies ->
+#      https://x.com.
+#   3. Copy the value of the "auth_token" cookie into X_AUTH_TOKEN.
+#   4. Copy the value of the "ct0" cookie into X_CT0.
+#   5. Set both as environment variables. If either is missing, this
+#      fetcher just no-ops (returns None) and the rest of the fallback
+#      chain behaves exactly as before - zero behavior change by default.
+#
+# These cookies expire after a while (the exact lifetime varies) - if
+# this fetcher works for a period and then quietly stops, the cookie has
+# most likely expired and needs to be refreshed the same way.
+#
+# Fragility warning: X changes the GraphQL "queryId" and the required
+# "features" flags for this endpoint from time to time without notice -
+# if this stops working even with fresh cookies, that's the first thing
+# to check/update (search "UserByScreenName queryId" for a current value
+# from an actively maintained open-source X/Twitter scraper).
+X_AUTH_TOKEN = os.environ.get("X_AUTH_TOKEN", "")
+X_CT0 = os.environ.get("X_CT0", "")
+
+# The "public" bearer token baked into X's own web app JavaScript bundle -
+# not a developer/paid API key. This exact value has been publicly known
+# and reused by open-source X/Twitter scrapers for years.
+_GRAPHQL_BEARER = (
+    "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D"
+    "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+
+# Query ID for the "UserByScreenName" GraphQL operation.
+_USER_BY_SCREEN_NAME_QUERY_ID = "sLVLhk0bGj3MVFEKTdax1w"
+
+# X's GraphQL API requires a large block of boolean "feature flags" to be
+# sent with every request, or it rejects the request outright. This list
+# can go stale when X adds/removes flags - if requests start failing with
+# a "cannot be null" style error, that's usually a missing/renamed flag.
+_GRAPHQL_FEATURES = {
+    "hidden_profile_subscriptions_enabled": True,
+    "rweb_tipjar_consumption_enabled": True,
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "subscriptions_verification_info_is_identity_verified_enabled": True,
+    "subscriptions_verification_info_verified_since_enabled": True,
+    "highlights_tweets_tab_ui_enabled": True,
+    "responsive_web_twitter_article_notes_tab_enabled": True,
+    "subscriptions_feature_can_gift_premium": True,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+}
+
+
+def _try_x_graphql_cookie(username: str) -> Optional[ProfileInfo]:
+    if not (X_AUTH_TOKEN and X_CT0):
+        return None
+
+    url = f"https://x.com/i/api/graphql/{_USER_BY_SCREEN_NAME_QUERY_ID}/UserByScreenName"
+    variables = {
+        "screen_name": username,
+        "withSafetyModeUserFields": True,
+        "withHighlightedLabel": True,
+    }
+    params = {
+        "variables": json.dumps(variables),
+        "features": json.dumps(_GRAPHQL_FEATURES),
+    }
+    headers = {
+        **DEFAULT_HEADERS,
+        "Authorization": _GRAPHQL_BEARER,
+        "x-csrf-token": X_CT0,
+        "x-twitter-active-user": "yes",
+        "x-twitter-auth-type": "OAuth2Session",
+        "x-twitter-client-language": "en",
+    }
+    cookies = {"auth_token": X_AUTH_TOKEN, "ct0": X_CT0}
+
+    try:
+        resp = requests.get(
+            url, params=params, headers=headers, cookies=cookies, timeout=REQUEST_TIMEOUT
+        )
+        if resp.status_code != 200:
+            logger.info("GraphQL cookie API status %s for %s", resp.status_code, username)
+            return None
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("GraphQL cookie API failed for %s: %s", username, exc)
+        return None
+
+    # Defensive parsing: X has reshuffled this response schema more than
+    # once - some fields sit directly under "legacy", others have moved
+    # into nested objects like "core" on newer schema versions. Any
+    # unexpected shape here just falls through to None (safe no-op)
+    # rather than raising, same philosophy as the rest of this module.
+    try:
+        result = data["data"]["user"]["result"]
+        legacy = result.get("legacy", {}) or {}
+        core = result.get("core", {}) or {}
+
+        def _pick(*dicts_and_keys):
+            for d, k in dicts_and_keys:
+                if d and d.get(k):
+                    return d.get(k)
+            return None
+
+        name = _pick((core, "name"), (legacy, "name"))
+        screen_name = _pick((core, "screen_name"), (legacy, "screen_name")) or username
+        description = legacy.get("description")
+
+        website = None
+        entities_urls = (legacy.get("entities", {}) or {}).get("url", {}).get("urls", [])
+        if entities_urls:
+            website = entities_urls[0].get("expanded_url")
+        elif legacy.get("url"):
+            website = _resolve_short_url(legacy["url"])
+
+        avatar = (
+            (result.get("avatar", {}) or {}).get("image_url")
+            or legacy.get("profile_image_url_https")
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Unexpected GraphQL cookie API response shape for %s", username)
+        return None
+
+    if not (name or description or website or avatar):
+        return None
+
+    return ProfileInfo(
+        username=screen_name,
+        name=name,
+        description=description,
+        website=website,
+        avatar_url=_full_res_avatar(avatar or ""),
+        source="x-graphql-cookie",
+    )
+
+
 def fetch_profile(username: str) -> ProfileInfo:
     """
     Tries to get profile info from the available sources, in priority
@@ -405,19 +556,46 @@ def fetch_profile(username: str) -> ProfileInfo:
     complete as possible.
     """
     result: Optional[ProfileInfo] = None
-    for fetcher in (_try_ogtags_direct, _try_syndication_api, _try_nitter):
+
+    # If configured, try the cookie-based GraphQL fetcher FIRST - it's
+    # the only source that reliably includes the separate "Website" field
+    # AND is free (see the X_AUTH_TOKEN/X_CT0 comment above), and it can
+    # supply name/description/avatar too, in a single request. If not
+    # configured, this is a cheap no-op (one env var check) and the rest
+    # of the chain behaves exactly as it did before this fetcher existed.
+    graphql_cookie_tried = bool(X_AUTH_TOKEN and X_CT0)
+    # Diagnostic log - only prints LENGTHS (never the actual secret
+    # values), so it's safe to leave on and check in Vercel logs. If both
+    # lengths show 0, the env vars aren't reaching this function at
+    # runtime (config/redeploy issue on the platform side, not a code
+    # bug) - that's the first thing to fix before anything else here
+    # matters.
+    logger.info(
+        "graphql cookie config check: X_AUTH_TOKEN len=%s, X_CT0 len=%s, configured=%s",
+        len(X_AUTH_TOKEN), len(X_CT0), graphql_cookie_tried,
+    )
+    if graphql_cookie_tried:
         try:
-            result = fetcher(username)
+            result = _try_x_graphql_cookie(username)
         except Exception:  # noqa: BLE001
-            logger.exception("Fetcher %s crashed for %s", fetcher.__name__, username)
+            logger.exception("GraphQL cookie fetcher crashed for %s", username)
             result = None
-        if result is not None:
-            break
+
+    if result is None:
+        for fetcher in (_try_ogtags_direct, _try_syndication_api, _try_nitter):
+            try:
+                result = fetcher(username)
+            except Exception:  # noqa: BLE001
+                logger.exception("Fetcher %s crashed for %s", fetcher.__name__, username)
+                result = None
+            if result is not None:
+                break
 
     if result is None:
         raise ProfileNotFound(
             f"Couldn't find profile @{username}. The account might not exist, "
-            f"be private, or every source (og-scrape, syndication API, nitter) "
+            f"be private, or every source (og-scrape, syndication API, nitter"
+            f"{', GraphQL cookie API' if graphql_cookie_tried else ''}) "
             f"might currently be blocked/down/rate-limited."
         )
 
@@ -425,8 +603,12 @@ def fetch_profile(username: str) -> ProfileInfo:
         already_tried_syndication = result.source == "syndication"
         already_tried_nitter = bool(result.source and result.source.startswith("nitter"))
         candidates = []
-        # The official X API (if X_BEARER_TOKEN is set) is prioritized
-        # since it's the most reliable data for the separate "Website" field.
+        # The free cookie-based GraphQL fetcher is tried first (if not
+        # already tried as the base above), then the official paid X API
+        # (if X_BEARER_TOKEN is set) - both are far more reliable for the
+        # separate "Website" field than the sources below.
+        if not graphql_cookie_tried:
+            candidates.append(_try_x_graphql_cookie)
         candidates.append(_try_x_official_api)
         if not already_tried_syndication:
             candidates.append(_try_syndication_api)
