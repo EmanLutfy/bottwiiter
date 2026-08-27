@@ -93,14 +93,14 @@ def _html_escape(text: str) -> str:
 
 def build_caption(profile: ProfileInfo, username: str) -> str:
     name = profile.name or f"@{username}"
+    # Semua nilai (termasuk description) di-wrap dalam tag <code> - dalam
+    # app Telegram, teks bergaya monospace/code macam ni boleh terus
+    # di-TAP untuk copy terus, tak payah select-all manual.
     description_line = (
-        _html_escape(profile.description) if profile.description else "<i>(tiada bio)</i>"
+        f"<code>{_html_escape(profile.description)}</code>"
+        if profile.description
+        else "<i>(tiada bio)</i>"
     )
-    # Nilai yang orang biasanya nak SALIN (link, username, website) di-wrap
-    # dalam tag <code> - dalam apps Telegram, teks bergaya monospace/code
-    # macam ni boleh terus di-TAP untuk copy terus, tak payah select-all
-    # manual. Description sengaja tak di-code-kan sebab ia prosa, bukan
-    # nilai untuk disalin.
     website_line = (
         f"<code>{_html_escape(profile.website)}</code>"
         if profile.website
