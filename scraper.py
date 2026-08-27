@@ -1,45 +1,49 @@
 """
 scraper.py
 ----------
-Logik untuk ambil maklumat profile X (Twitter) berdasarkan username/URL:
-- nama paparan (display name)
+Logic for fetching X (Twitter) profile info from a username/URL:
+- display name
 - description / bio
-- website (link dalam bio)
-- avatar / logo (URL gambar resolusi penuh)
+- website (link in bio)
+- avatar / logo (full-resolution image URL)
 
-X (dulu Twitter) sekarang sangat ketat pasal scraping page utama sebab ia
-"single page app" yang di-render guna JavaScript, dan selalunya minta login
-untuk lihat profile penuh. Sebab tu kod ni cuba BEBERAPA sumber secara
-berturutan (fallback chain), sebab mana-mana satu boleh je kena block/down
-bila-bila masa, dan setiap satu ada titik lemah berbeza:
+X (formerly Twitter) is now very strict about scraping its main page,
+since it's a JavaScript-rendered "single page app" and usually requires
+login to view a full profile. That's why this code tries SEVERAL sources
+in sequence (a fallback chain) - any one of them can get blocked/go down
+at any time, and each has a different weak point:
 
-  1. Meta-tag (og:title/og:description/og:image) dari x.com/twitter.com
-     terus, guna User-Agent macam bot preview (Telegram/Twitterbot/
-     Discordbot dll). X memang benarkan bot jenis ni "intip" og-tags untuk
-     tujuan link-preview walaupun browser biasa kena login wall - ini
-     sebab preview link X dalam Telegram/WhatsApp selalu jalan walaupun
-     page sebenar minta login. TAPI: og:image kadang-kadang banner
-     (gambar cover), bukan avatar/logo bulat, dan tiada field "website"
-     berasingan (link website di bio X berlainan drpd teks bio).
-  2. Twitter "syndication" JSON endpoint (dipakai oleh widget embed rasmi
-     Twitter/X sendiri) - bagi avatar + website yang betul (field
-     berasingan), tapi endpoint ni sebenarnya endpoint "timeline", jadi
-     akaun yang tiada tweet langsung / baru / kena had kadang-kadang tak
-     keluar dalam response walaupun akaun tu wujud.
-  3. Nitter mirrors (front-end alternatif untuk X) - guna kalau (1) & (2)
-     gagal. NOTA: kebanyakan instance nitter awam dah mati/di-block sejak
-     X mengetatkan akses, jadi lapisan ni paling tak boleh diharap sekarang
-     - anggap ia sebagai last resort sahaja, bukan sumber utama.
+  1. Meta tags (og:title/og:description/og:image) fetched directly from
+     x.com/twitter.com, using a User-Agent that mimics a link-preview bot
+     (Telegram/Twitterbot/Discordbot etc). X deliberately allows these
+     bots to read og:tags for link-unfurling purposes, even though a
+     regular browser/scraper hits a "log in to view this profile" wall -
+     this is why X link previews in Telegram/WhatsApp always work even
+     though the real page demands login. BUT: og:image is sometimes the
+     banner (cover image), not the round avatar, and there's no separate
+     "website" field (the website link in an X bio is different from the
+     bio text itself).
+  2. Twitter's "syndication" JSON endpoint (used by the official
+     Twitter/X "Follow Button" and timeline embed widgets) - gives the
+     correct avatar + website (a separate field), but this endpoint is
+     actually a "timeline" endpoint, so an account with no tweets at
+     all / a new account / a rate-limited account sometimes doesn't show
+     up in the response even though the account exists.
+  3. Nitter mirrors (an alternative front-end for X) - used if (1) and
+     (2) fail. NOTE: most public nitter instances have died/been blocked
+     since X tightened access, so this layer is the least reliable right
+     now - treat it as a last resort only, not a primary source.
 
-Kalau semua gagal, fungsi akan return error yang jelas supaya bot boleh
-maklumkan user. ProfileInfo.source akan diisi dengan nama sumber yang
-berjaya - bot.py papar ni sekali supaya senang nak debug bila sesuatu akaun
-"tak jumpa" walaupun akaun tu wujud.
+If everything fails, the function raises a clear error so the bot can
+inform the user. ProfileInfo.source is filled with the name of whichever
+source succeeded - bot.py displays this too, to make it easy to debug
+when some account is "not found" even though it exists.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import re
 import logging
 from dataclasses import dataclass
@@ -55,13 +59,14 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-# User-Agent yang meniru bot "link preview" (Telegram/Twitterbot/Discordbot).
-# X secara sengaja benarkan bot jenis ni baca og:tags untuk keperluan
-# unfurl link, walaupun browser/scraper biasa selalu kena "log in to view
-# this profile" wall. Ini sebab preview link X dalam Telegram tetap boleh
-# tunjuk nama/bio/gambar walaupun page sebenar minta login.
-# Disenaraikan pendek (2, bukan 3+) supaya jumlah percubaan x timeout tak
-# lebih had masa fungsi serverless (contoh Vercel Hobby plan ~10s).
+# User-Agent that mimics a "link preview" bot (Telegram/Twitterbot/
+# Discordbot). X deliberately allows this kind of bot to read og:tags
+# for link-unfurling purposes, even though a regular browser/scraper
+# always hits a "log in to view this profile" wall. This is why an X
+# link preview in Telegram still shows name/bio/image even though the
+# real page demands login.
+# Kept short (2, not 3+) so the number of attempts x timeout doesn't
+# exceed a serverless function's time limit (e.g. Vercel Hobby plan ~10s).
 BOT_USER_AGENTS = [
     "Mozilla/5.0 (compatible; TelegramBot (like TwitterBot))",
     "Twitterbot/1.0",
@@ -72,22 +77,22 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Kedua-dua host ni kadang berlainan nasib (satu block, satu tak).
+# These two hosts sometimes have different luck (one blocked, one not).
 PROFILE_HOSTS = ["https://x.com", "https://twitter.com"]
 
-# Senarai nitter mirror sebagai fallback. Nitter instance selalu naik-turun,
-# jadi list ni patut disemak/dikemaskini dari semasa ke semasa.
-# Rujuk: https://github.com/zedeus/nitter/wiki/Instances
+# List of nitter mirrors used as a fallback. Nitter instances constantly
+# go up and down, so this list should be reviewed/updated periodically.
+# See: https://github.com/zedeus/nitter/wiki/Instances
 NITTER_MIRRORS = [
     "https://nitter.net",
     "https://nitter.privacydev.net",
     "https://nitter.poast.org",
 ]
 
-# Nota deploy Vercel: fungsi serverless ada had masa (Hobby plan lazimnya
-# ~10s). fetch_profile() cuba beberapa host/User-Agent secara berturutan,
-# jadi timeout per-request kena singkat supaya jumlah keseluruhan tak
-# lebih had tu bila beberapa percubaan gagal berturutan.
+# Vercel deployment note: serverless functions have a time limit (Hobby
+# plan is typically ~10s). fetch_profile() tries several hosts/User-Agents
+# in sequence, so the per-request timeout needs to be short so the total
+# doesn't exceed that limit when several attempts fail in a row.
 REQUEST_TIMEOUT = 6
 
 
@@ -98,11 +103,11 @@ class ProfileInfo:
     description: Optional[str] = None
     website: Optional[str] = None
     avatar_url: Optional[str] = None
-    source: Optional[str] = None  # untuk debugging - dari mana data ni datang
+    source: Optional[str] = None  # for debugging - where this data came from
 
 
 class ProfileNotFound(Exception):
-    """Bila username langsung tak jumpa di mana-mana sumber."""
+    """Raised when the username simply can't be found from any source."""
 
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
@@ -110,17 +115,17 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 
 def extract_username(text: str) -> Optional[str]:
     """
-    Terima input bebas dari user - boleh jadi:
+    Accepts free-form input from the user - can be:
       - https://x.com/username
       - https://twitter.com/username?query=...
       - x.com/username/
       - @username
       - username
-    Pulangkan username sahaja (tanpa @), atau None kalau tak jumpa.
+    Returns the username only (without @), or None if not found.
     """
     text = text.strip()
 
-    # Cuba pattern URL dulu
+    # Try the URL pattern first
     m = re.search(
         r"(?:https?://)?(?:www\.)?(?:x|twitter)\.com/(@?[A-Za-z0-9_]{1,15})"
         r"(?:[/?#].*)?$",
@@ -132,9 +137,10 @@ def extract_username(text: str) -> Optional[str]:
     else:
         candidate = text.lstrip("@")
 
-    # Elak "tangkap" path yang bukan username sebenar (contoh: x.com/home,
-    # x.com/i/..., x.com/search) - ni tak boleh dielak 100% sebab X guna
-    # laluan yang sama untuk reserved words, tapi kita check format asas je.
+    # Avoid "catching" a path that isn't a real username (e.g. x.com/home,
+    # x.com/i/..., x.com/search) - this can't be fully avoided since X
+    # uses the same path scheme for reserved words, so we just check the
+    # basic format.
     if _USERNAME_RE.match(candidate):
         return candidate
     return None
@@ -142,8 +148,8 @@ def extract_username(text: str) -> Optional[str]:
 
 def _full_res_avatar(url: str) -> str:
     """
-    Avatar dari API/HTML biasanya versi kecil (contoh: ..._normal.jpg,
-    saiz 48x48). Tukar ke versi resolusi lebih besar (400x400).
+    The avatar from the API/HTML is usually a small version (e.g.
+    ..._normal.jpg, 48x48). Swap it for a larger resolution (400x400).
     """
     if not url:
         return url
@@ -152,13 +158,14 @@ def _full_res_avatar(url: str) -> str:
 
 def _field(user: dict, key: str, default=None):
     """
-    Baca satu field dari objek user syndication API - tapi X kerap tukar
-    "bentuk" response ni (kadang field terus kat top-level, kadang
-    dibungkus dalam sub-objek "legacy": {...}, ikut versi backend mana
-    yang deploy endpoint ni pada masa tu). Fungsi ni cuba DUA-DUA bentuk
-    supaya kod tak "buta" bila X tukar bentuk tanpa notis - ni punca
-    biasa kenapa website/bio tiba-tiba tak dikesan walaupun akaun tu
-    memang ada.
+    Read one field from a syndication API user object - but X frequently
+    changes the "shape" of this response (sometimes a field sits at the
+    top level, sometimes it's wrapped in a "legacy": {...} sub-object,
+    depending on which backend version is serving this endpoint at the
+    time). This function tries BOTH shapes so the code isn't "blind" when
+    X changes shape without notice - this is a common reason why
+    website/bio suddenly stops being detected even though the account
+    genuinely has one.
     """
     if key in user:
         return user[key]
@@ -167,7 +174,7 @@ def _field(user: dict, key: str, default=None):
 
 
 def _resolve_short_url(short_url: str) -> Optional[str]:
-    """Ikut redirect link t.co (atau apa-apa short URL) untuk dapat URL sebenar."""
+    """Follow a t.co (or any other short URL) redirect to get the real URL."""
     if not short_url:
         return None
     try:
@@ -182,8 +189,8 @@ def _resolve_short_url(short_url: str) -> Optional[str]:
 
 def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
     """
-    Guna endpoint syndication rasmi yang dipakai oleh widget "Follow Button"
-    dan embed timeline X. Tak perlu API key/login.
+    Uses the official syndication endpoint used by the "Follow Button"
+    widget and X's timeline embed. No API key/login required.
     """
     url = "https://cdn.syndication.twimg.com/timeline/profile"
     params = {
@@ -195,11 +202,11 @@ def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
             url, params=params, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT
         )
         if resp.status_code != 200:
-            logger.info("syndication API status %s untuk %s", resp.status_code, username)
+            logger.info("syndication API status %s for %s", resp.status_code, username)
             return None
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        logger.info("syndication API gagal untuk %s: %s", username, exc)
+        logger.info("syndication API failed for %s: %s", username, exc)
         return None
 
     users = (data or {}).get("globalObjects", {}).get("users", {})
@@ -208,10 +215,11 @@ def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
         if str(_field(user, "screen_name", "")).lower() == username.lower():
             match = user
             break
-    # NOTA: sengaja TIADA fallback "ambil user pertama" kalau tiada
-    # padanan tepat - dulu ada, tapi ni boleh diam-diam pulangkan data
-    # akaun yang SALAH (contoh: akaun lain yang muncul dalam timeline
-    # sebab retweet), lagi teruk drpd tak jumpa langsung.
+    # NOTE: deliberately NO "take the first user" fallback when there's
+    # no exact match - there used to be one, but it could silently return
+    # data for the WRONG account (e.g. some other account that showed up
+    # in the timeline because of a retweet), which is worse than not
+    # finding anything at all.
     if match is None:
         return None
 
@@ -224,8 +232,8 @@ def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
     if entities_urls:
         website = entities_urls[0].get("expanded_url")
     else:
-        # Fallback: field "url" ringkas (link t.co bio) ada tapi
-        # "entities.url.urls" tu kosong - cuba ikut redirect terus.
+        # Fallback: the short "url" field (bio t.co link) is present but
+        # "entities.url.urls" is empty - try following the redirect directly.
         short_url = _field(match, "url")
         if short_url:
             website = _resolve_short_url(short_url)
@@ -242,13 +250,14 @@ def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
 
 def _try_ogtags_direct(username: str) -> Optional[ProfileInfo]:
     """
-    Baca meta og:tags terus dari x.com/twitter.com, guna User-Agent yang
-    meniru bot link-preview (rujuk nota BOT_USER_AGENTS kat atas). Ini
-    approach yang sama macam Telegram/WhatsApp guna untuk hasilkan
-    "card" preview bila korang paste link X.
+    Reads og:tags meta directly from x.com/twitter.com, using a User-Agent
+    that mimics a link-preview bot (see the BOT_USER_AGENTS note above).
+    This is the same approach Telegram/WhatsApp use to produce a "card"
+    preview when you paste an X link.
 
-    Had: og:image kadang banner (bukan avatar bulat), dan tiada field
-    "website" berasingan sebab website di bio X bukan sebahagian og:tags.
+    Limitation: og:image is sometimes the banner (not a round avatar),
+    and there's no separate "website" field since the website in an X
+    bio isn't part of og:tags.
     """
     for host in PROFILE_HOSTS:
         for ua in BOT_USER_AGENTS:
@@ -259,12 +268,12 @@ def _try_ogtags_direct(username: str) -> Optional[ProfileInfo]:
                 )
                 if resp.status_code != 200:
                     logger.info(
-                        "og-scrape %s (%s) status %s untuk %s", host, ua, resp.status_code, username
+                        "og-scrape %s (%s) status %s for %s", host, ua, resp.status_code, username
                     )
                     continue
                 html = resp.text
             except Exception as exc:  # noqa: BLE001
-                logger.info("og-scrape %s (%s) gagal untuk %s: %s", host, ua, username, exc)
+                logger.info("og-scrape %s (%s) failed for %s: %s", host, ua, username, exc)
                 continue
 
             title_m = _OG_TITLE_RE.search(html)
@@ -276,14 +285,14 @@ def _try_ogtags_direct(username: str) -> Optional[ProfileInfo]:
 
             name = None
             if title_m:
-                # Format biasa: "Nama (@handle) on X" / "Nama (@handle) / Twitter"
+                # Common format: "Name (@handle) on X" / "Name (@handle) / Twitter"
                 name = re.split(r"\s*\(@|\s+/\s+", title_m.group(1))[0].strip()
 
             return ProfileInfo(
                 username=username,
                 name=name,
                 description=desc_m.group(1) if desc_m else None,
-                website=None,  # og:tags x.com tak dedah field website berasingan
+                website=None,  # x.com's og:tags don't expose a separate website field
                 avatar_url=image_m.group(1) if image_m else None,
                 source=f"og-scrape:{host}",
             )
@@ -314,7 +323,7 @@ def _try_nitter(username: str) -> Optional[ProfileInfo]:
                 continue
             html = resp.text
         except Exception as exc:  # noqa: BLE001
-            logger.info("Nitter mirror %s gagal untuk %s: %s", base, username, exc)
+            logger.info("Nitter mirror %s failed for %s: %s", base, username, exc)
             continue
 
         title_m = _OG_TITLE_RE.search(html)
@@ -338,48 +347,144 @@ def _try_nitter(username: str) -> Optional[ProfileInfo]:
     return None
 
 
+# Official X API (OPTIONAL, pay-per-use - see README). Only used when the
+# X_BEARER_TOKEN env var is set; otherwise this function just returns
+# None and the code falls back to the free fallbacks (link found in bio).
+# This is currently the MOST reliable source for the separate "Website"
+# field, since the syndication API is dead and nitter can't be relied on
+# either - X itself guarantees this data is correct.
+X_BEARER_TOKEN = os.environ.get("X_BEARER_TOKEN", "")
+
+
+def _try_x_official_api(username: str) -> Optional[ProfileInfo]:
+    if not X_BEARER_TOKEN:
+        return None
+
+    url = f"https://api.twitter.com/2/users/by/username/{username}"
+    params = {"user.fields": "description,profile_image_url,url,entities"}
+    headers = {**DEFAULT_HEADERS, "Authorization": f"Bearer {X_BEARER_TOKEN}"}
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            logger.info("official X API status %s for %s", resp.status_code, username)
+            return None
+        data = (resp.json() or {}).get("data")
+    except Exception as exc:  # noqa: BLE001
+        logger.info("official X API failed for %s: %s", username, exc)
+        return None
+
+    if not data:
+        return None
+
+    website = None
+    entities_urls = data.get("entities", {}).get("url", {}).get("urls", [])
+    if entities_urls:
+        website = entities_urls[0].get("expanded_url")
+    elif data.get("url"):
+        website = _resolve_short_url(data["url"])
+
+    return ProfileInfo(
+        username=data.get("username", username),
+        name=data.get("name"),
+        description=data.get("description"),
+        website=website,
+        avatar_url=_full_res_avatar(data.get("profile_image_url", "")),
+        source="x-api-official",
+    )
+
+
 def fetch_profile(username: str) -> ProfileInfo:
     """
-    Cuba dapatkan maklumat profile dari sumber-sumber yang tersedia,
-    ikut turutan keutamaan. Raise ProfileNotFound kalau semua gagal.
+    Tries to get profile info from the available sources, in priority
+    order. Raises ProfileNotFound if everything fails.
 
-    Sumber pertama yang berjaya jadi "asas" (name/description/avatar).
-    Kalau asas tu tak bagi field "website" (contoh: og-scrape memang
-    tak sokong field ni), kita cuba lengkapkan dari syndication API
-    secara berasingan supaya hasil akhir selengkap mungkin.
+    Whichever source succeeds first becomes the "base" (name/description/
+    avatar). If that base doesn't provide a "website" field (e.g.
+    og-scrape simply doesn't support this field), we try to fill it in
+    separately from the syndication API so the final result is as
+    complete as possible.
     """
     result: Optional[ProfileInfo] = None
     for fetcher in (_try_ogtags_direct, _try_syndication_api, _try_nitter):
         try:
             result = fetcher(username)
         except Exception:  # noqa: BLE001
-            logger.exception("Fetcher %s crash untuk %s", fetcher.__name__, username)
+            logger.exception("Fetcher %s crashed for %s", fetcher.__name__, username)
             result = None
         if result is not None:
             break
 
     if result is None:
         raise ProfileNotFound(
-            f"Tak dapat cari profile @{username}. Mungkin akaun tak wujud, "
-            f"private, atau semua sumber (og-scrape, syndication API, nitter) "
-            f"sedang di-block/down/rate-limited waktu ni."
+            f"Couldn't find profile @{username}. The account might not exist, "
+            f"be private, or every source (og-scrape, syndication API, nitter) "
+            f"might currently be blocked/down/rate-limited."
         )
 
-    if not result.website and result.source and not result.source.startswith("syndication"):
-        try:
-            extra = _try_syndication_api(username)
-        except Exception:  # noqa: BLE001
-            extra = None
-        if extra and extra.website:
-            result.website = extra.website
+    if not result.website:
+        already_tried_syndication = result.source == "syndication"
+        already_tried_nitter = bool(result.source and result.source.startswith("nitter"))
+        candidates = []
+        # The official X API (if X_BEARER_TOKEN is set) is prioritized
+        # since it's the most reliable data for the separate "Website" field.
+        candidates.append(_try_x_official_api)
+        if not already_tried_syndication:
+            candidates.append(_try_syndication_api)
+        if not already_tried_nitter:
+            candidates.append(_try_nitter)
+
+        for extra_fetcher in candidates:
+            try:
+                extra = extra_fetcher(username)
+            except Exception:  # noqa: BLE001
+                extra = None
+            if extra and extra.website:
+                result.website = extra.website
+                logger.info(
+                    "Website filled in from %s for %s",
+                    getattr(extra_fetcher, "__name__", "extra_fetcher"),
+                    username,
+                )
+                break
+
+    if not result.website and result.description:
+        # Last resort: the syndication API (the "official" website field)
+        # is getting less and less reliable - the endpoint itself
+        # frequently returns an empty response now. A lot of accounts
+        # just put a link directly in their bio text (e.g.
+        # "Try now: https://t.co/xxx") - we grab the FIRST link in the
+        # bio as a website substitute. Not 100% the same as X's separate
+        # "website" field, but it's the most useful, trustworthy link
+        # available given that we've already successfully read that bio.
+        bio_url = _extract_url_from_text(result.description)
+        if bio_url:
+            result.website = (
+                _resolve_short_url(bio_url) if "t.co/" in bio_url else bio_url
+            )
+            logger.info("Website extracted from bio text for %s", username)
 
     return result
 
 
+_URL_IN_TEXT_RE = re.compile(r"https?://\S+")
+
+
+def _extract_url_from_text(text: str) -> Optional[str]:
+    """Find the FIRST link that appears in a piece of text (e.g. a bio)."""
+    if not text:
+        return None
+    m = _URL_IN_TEXT_RE.search(text)
+    if not m:
+        return None
+    # Strip trailing punctuation that might have been swept up but isn't
+    # actually part of the URL (e.g. a sentence-ending period).
+    return m.group(0).rstrip(".,;:!?)]}\"'")
+
+
 def download_avatar_png(avatar_url: str) -> io.BytesIO:
     """
-    Muat turun avatar dan pulangkan sebagai PNG dalam BytesIO,
-    tak kira format asal (jpg/webp/png).
+    Downloads the avatar and returns it as a PNG in a BytesIO,
+    regardless of the original format (jpg/webp/png).
     """
     resp = requests.get(avatar_url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
