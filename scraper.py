@@ -150,6 +150,36 @@ def _full_res_avatar(url: str) -> str:
     return re.sub(r"_normal(?=\.\w+$)", "_400x400", url)
 
 
+def _field(user: dict, key: str, default=None):
+    """
+    Baca satu field dari objek user syndication API - tapi X kerap tukar
+    "bentuk" response ni (kadang field terus kat top-level, kadang
+    dibungkus dalam sub-objek "legacy": {...}, ikut versi backend mana
+    yang deploy endpoint ni pada masa tu). Fungsi ni cuba DUA-DUA bentuk
+    supaya kod tak "buta" bila X tukar bentuk tanpa notis - ni punca
+    biasa kenapa website/bio tiba-tiba tak dikesan walaupun akaun tu
+    memang ada.
+    """
+    if key in user:
+        return user[key]
+    legacy = user.get("legacy") or {}
+    return legacy.get(key, default)
+
+
+def _resolve_short_url(short_url: str) -> Optional[str]:
+    """Ikut redirect link t.co (atau apa-apa short URL) untuk dapat URL sebenar."""
+    if not short_url:
+        return None
+    try:
+        resp = requests.head(
+            short_url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        return resp.url or short_url
+    except Exception:  # noqa: BLE001
+        return short_url
+
+
 def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
     """
     Guna endpoint syndication rasmi yang dipakai oleh widget "Follow Button"
@@ -175,26 +205,37 @@ def _try_syndication_api(username: str) -> Optional[ProfileInfo]:
     users = (data or {}).get("globalObjects", {}).get("users", {})
     match = None
     for user in users.values():
-        if user.get("screen_name", "").lower() == username.lower():
+        if str(_field(user, "screen_name", "")).lower() == username.lower():
             match = user
             break
-    if match is None and users:
-        # fallback: ambil user pertama kalau tiada padanan tepat
-        match = next(iter(users.values()))
+    # NOTA: sengaja TIADA fallback "ambil user pertama" kalau tiada
+    # padanan tepat - dulu ada, tapi ni boleh diam-diam pulangkan data
+    # akaun yang SALAH (contoh: akaun lain yang muncul dalam timeline
+    # sebab retweet), lagi teruk drpd tak jumpa langsung.
     if match is None:
         return None
 
     website = None
-    entities = match.get("entities", {}).get("url", {}).get("urls", [])
-    if entities:
-        website = entities[0].get("expanded_url")
+    entities_urls = (
+        _field(match, "entities", {}).get("url", {}).get("urls", [])
+        if isinstance(_field(match, "entities", {}), dict)
+        else []
+    )
+    if entities_urls:
+        website = entities_urls[0].get("expanded_url")
+    else:
+        # Fallback: field "url" ringkas (link t.co bio) ada tapi
+        # "entities.url.urls" tu kosong - cuba ikut redirect terus.
+        short_url = _field(match, "url")
+        if short_url:
+            website = _resolve_short_url(short_url)
 
     return ProfileInfo(
-        username=match.get("screen_name", username),
-        name=match.get("name"),
-        description=match.get("description"),
+        username=_field(match, "screen_name", username),
+        name=_field(match, "name"),
+        description=_field(match, "description"),
         website=website,
-        avatar_url=_full_res_avatar(match.get("profile_image_url_https", "")),
+        avatar_url=_full_res_avatar(_field(match, "profile_image_url_https", "")),
         source="syndication",
     )
 
