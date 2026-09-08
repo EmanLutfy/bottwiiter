@@ -47,7 +47,6 @@ import json
 import os
 import re
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
 
@@ -646,125 +645,7 @@ def fetch_profile(username: str) -> ProfileInfo:
             )
             logger.info("Website extracted from bio text for %s", username)
 
-    if not result.website:
-        # Absolute last resort: GUESS a domain by combining the account's
-        # name/username with a handful of common TLDs, and probe each one
-        # to see if it actually resolves to a live page. This is a GUESS,
-        # not data read from X - it can occasionally land on the wrong
-        # (but real) site that just happens to share the name, or slip
-        # past the parking-page check below. Only runs when literally
-        # nothing else (including a link in the bio) found anything.
-        guessed = _guess_domain_website(result.name, result.username)
-        if guessed:
-            result.website = guessed
-            logger.info("Website guessed via domain-TLD probing for %s: %s", username, guessed)
-
     return result
-
-
-# TLDs to try, in this order, when guessing a domain (see
-# _guess_domain_website below). Order matters only for which candidate
-# wins when more than one resolves - all candidates are still probed
-# concurrently, not one-by-one.
-_GUESS_TLDS = [".xyz", ".com", ".fun", ".io", ".space", ".tech", ".family"]
-
-# Snippets that suggest a domain is just parked/for-sale rather than a
-# real site for this account - used to avoid confidently reporting a
-# domain-for-sale page as someone's "website". Not exhaustive.
-_PARKING_PAGE_MARKERS = (
-    "domain is for sale",
-    "this domain may be for sale",
-    "buy this domain",
-    "domain parking",
-    "the owner of this domain",
-    "godaddy.com/domains",
-    "sedo.com",
-    "dan.com",
-)
-
-
-def _slugify(text: Optional[str]) -> Optional[str]:
-    """Turn a name/username into a bare domain-label candidate (lowercase
-    letters/digits only, no spaces/punctuation/emoji)."""
-    if not text:
-        return None
-    slug = re.sub(r"[^a-z0-9]", "", text.lower())
-    return slug or None
-
-
-def _looks_like_parking_page(body: str) -> bool:
-    lowered = body.lower()
-    return any(marker in lowered for marker in _PARKING_PAGE_MARKERS)
-
-
-def _probe_domain(domain: str) -> Optional[str]:
-    """
-    Checks whether https://{domain} resolves to a real-looking live page.
-    Returns the final URL (after following redirects) if so, else None.
-    Deliberately HTTPS-only and a short timeout - this runs as part of a
-    concurrent batch of guesses (see _guess_domain_website), so keeping
-    each probe cheap matters for staying inside a serverless function's
-    time budget.
-    """
-    try:
-        resp = requests.get(
-            f"https://{domain}",
-            headers=DEFAULT_HEADERS,
-            timeout=3,
-            allow_redirects=True,
-        )
-        if resp.status_code < 400 and not _looks_like_parking_page(resp.text[:3000]):
-            return resp.url
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-def _guess_domain_website(name: Optional[str], username: str) -> Optional[str]:
-    """
-    Builds domain candidates from the display name and username (e.g.
-    "Overweight Market" / @OverweightMkt -> overweightmarket.xyz,
-    overweightmkt.xyz, overweightmarket.com, ...) and probes all of them
-    at once. Returns the first one (in candidate priority order) that
-    resolved to a real-looking page, or None if nothing did.
-    """
-    slugs = []
-    for candidate in (_slugify(username), _slugify(name)):
-        if candidate and candidate not in slugs:
-            slugs.append(candidate)
-
-    domains = []
-    for slug in slugs:
-        for tld in _GUESS_TLDS:
-            domain = f"{slug}{tld}"
-            if domain not in domains:
-                domains.append(domain)
-
-    if not domains:
-        return None
-
-    # Probe every candidate concurrently so the total wall time stays
-    # close to a single request's timeout rather than N x timeout - this
-    # matters a lot on a serverless platform with a strict execution
-    # time limit, especially since this is tried after several other
-    # (slower) fetchers have already run and failed.
-    results: dict[str, Optional[str]] = {}
-    with ThreadPoolExecutor(max_workers=len(domains)) as pool:
-        future_to_domain = {pool.submit(_probe_domain, d): d for d in domains}
-        for future in as_completed(future_to_domain):
-            domain = future_to_domain[future]
-            try:
-                results[domain] = future.result()
-            except Exception:  # noqa: BLE001
-                results[domain] = None
-
-    # Preserve priority order (slug order, then TLD order) rather than
-    # "whichever finished first" - a concurrent probe can complete out
-    # of order.
-    for domain in domains:
-        if results.get(domain):
-            return results[domain]
-    return None
 
 
 _URL_IN_TEXT_RE = re.compile(r"https?://\S+")
