@@ -709,12 +709,16 @@ def _looks_like_parking_page(body: str) -> bool:
     return any(marker in lowered for marker in _PARKING_PAGE_MARKERS)
 
 
-def _probe_domain(domain: str) -> Optional[str]:
+def _probe_domain(domain: str) -> tuple[str, Optional[str]]:
     """
-    Checks whether https://{domain} resolves to a real-looking live page.
-    Returns the final URL (after following redirects) if so, else None.
+    Checks whether https://{domain} resolves to a page, and what kind.
+    Returns (status, url):
+      - ("live", final_url)   - resolves, and doesn't look parked/for-sale
+      - ("parked", final_url) - resolves, but looks like a parking/
+                                 for-sale page (see _looks_like_parking_page)
+      - ("dead", None)        - doesn't resolve / times out / errors / 4xx+
     Deliberately HTTPS-only and a short timeout - this runs as part of a
-    concurrent batch of guesses (see guess_domain_website), so keeping
+    concurrent batch of probes (see probe_domain_candidates), so keeping
     each probe cheap matters for staying inside a serverless function's
     time budget.
     """
@@ -725,21 +729,30 @@ def _probe_domain(domain: str) -> Optional[str]:
             timeout=3,
             allow_redirects=True,
         )
-        if resp.status_code < 400 and not _looks_like_parking_page(resp.text[:3000]):
-            return resp.url
+        if resp.status_code < 400:
+            if _looks_like_parking_page(resp.text[:3000]):
+                return ("parked", resp.url)
+            return ("live", resp.url)
     except Exception:  # noqa: BLE001
         pass
-    return None
+    return ("dead", None)
 
 
-def guess_domain_website(username: str, name_slug: Optional[str] = None) -> Optional[str]:
+def probe_domain_candidates(
+    username: str, name_slug: Optional[str] = None
+) -> list[tuple[str, str, Optional[str]]]:
     """
     Builds domain candidates from the username and (optionally) an
     already-slugified display name, e.g. username "OverweightMkt" +
     name_slug "overweightmarket" -> overweightmkt.xyz, overweightmarket.xyz,
-    overweightmkt.com, ... and probes all of them at once. Returns the
-    first one (in candidate priority order) that resolved to a
-    real-looking page, or None if nothing did.
+    overweightmkt.com, ... and probes ALL of them.
+
+    Returns EVERY result (not just the first hit) as a list of
+    (domain, status, url) tuples in priority order, so a human can look
+    at the whole picture and judge which one (if any) is really theirs -
+    this deliberately does not pick a "winner" itself, since testing
+    showed real false-positive risk (a parked domain, or an unrelated
+    company that happens to share the name).
 
     Called ONLY on-demand (see the module docstring above this section) -
     never from fetch_profile().
@@ -757,13 +770,13 @@ def guess_domain_website(username: str, name_slug: Optional[str] = None) -> Opti
                 domains.append(domain)
 
     if not domains:
-        return None
+        return []
 
     # Probe every candidate concurrently so the total wall time stays
     # close to a single request's timeout rather than N x timeout - this
     # matters a lot on a serverless platform with a strict execution
     # time limit.
-    results: dict[str, Optional[str]] = {}
+    results: dict[str, tuple[str, Optional[str]]] = {}
     with ThreadPoolExecutor(max_workers=len(domains)) as pool:
         future_to_domain = {pool.submit(_probe_domain, d): d for d in domains}
         for future in as_completed(future_to_domain):
@@ -771,15 +784,12 @@ def guess_domain_website(username: str, name_slug: Optional[str] = None) -> Opti
             try:
                 results[domain] = future.result()
             except Exception:  # noqa: BLE001
-                results[domain] = None
+                results[domain] = ("dead", None)
 
     # Preserve priority order (slug order, then TLD order) rather than
     # "whichever finished first" - a concurrent probe can complete out
     # of order.
-    for domain in domains:
-        if results.get(domain):
-            return results[domain]
-    return None
+    return [(d, results[d][0], results[d][1]) for d in domains]
 
 
 def download_avatar_png(avatar_url: str) -> io.BytesIO:
