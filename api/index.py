@@ -147,7 +147,7 @@ def _domain_guess_button(username: str, name: Optional[str]) -> dict:
     return {
         "inline_keyboard": [[
             {
-                "text": "🔍 Force-check a domain",
+                "text": "🔍 Force Website",
                 "callback_data": _domain_guess_callback_data(username, name),
             }
         ]]
@@ -318,8 +318,7 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>These are guesses based on the name, not data read from X - "
-        "check the ✅ ones yourself before trusting any of them.</i>",
+        "<i>Check one of these yourself before trusting it.</i>",
     ]
     return "\n".join(lines)
 
