@@ -67,6 +67,26 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 # one else can "spam" this endpoint with fake payloads if the URL leaks.
 WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
+# Optional - makes this a PRIVATE bot. Comma-separated Telegram numeric
+# user IDs, e.g. "111111111,222222222". When set, only these users can
+# use the bot - everyone else gets a short message showing THEIR OWN id
+# so they can send it to the owner to request access (self-service, no
+# need to dig it out of Telegram settings). When left empty (default),
+# the bot is public - anyone can use it, exactly like before this
+# feature existed.
+ALLOWED_USER_IDS = os.environ.get("ALLOWED_USER_IDS", "")
+_ALLOWED_USER_ID_SET = {
+    int(uid.strip()) for uid in ALLOWED_USER_IDS.split(",") if uid.strip().isdigit()
+}
+
+
+def _is_allowed(user_id) -> bool:
+    # No whitelist configured at all -> public bot, everyone allowed.
+    if not _ALLOWED_USER_ID_SET:
+        return True
+    return user_id in _ALLOWED_USER_ID_SET
+
+
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Use 'requests' directly (not the python-telegram-bot library) - lighter
@@ -147,7 +167,7 @@ def _domain_guess_button(username: str, name: Optional[str]) -> dict:
     return {
         "inline_keyboard": [[
             {
-                "text": "  🙈 Force/Guess Website",
+                "text": "🔍 Force Website",
                 "callback_data": _domain_guess_callback_data(username, name),
             }
         ]]
@@ -318,7 +338,7 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>Check dulu ya satu satu </i>",
+        "<i>Check one of these yourself before trusting it.</i>",
     ]
     return "\n".join(lines)
 
@@ -339,6 +359,17 @@ def catch_all(_path):
 
     callback_query = update.get("callback_query")
     if callback_query:
+        caller_id = (callback_query.get("from") or {}).get("id")
+        if not _is_allowed(caller_id):
+            # Don't run the domain check for a non-whitelisted user, but
+            # still answer the callback so their button doesn't just spin
+            # forever - a short toast is enough here (no need to show
+            # their id again, they'd have already seen it from /start or
+            # a text message).
+            tg_answer_callback_query(
+                callback_query.get("id"), text="This bot is private."
+            )
+            return jsonify(ok=True)
         try:
             handle_callback_query(callback_query)
         except Exception:  # noqa: BLE001
@@ -354,6 +385,16 @@ def catch_all(_path):
     text = message.get("text", "")
 
     if chat_id is None:
+        return jsonify(ok=True)
+
+    sender_id = (message.get("from") or {}).get("id")
+    if not _is_allowed(sender_id):
+        tg_send_message(
+            chat_id,
+            "🔒 This bot is private.\n\n"
+            f"Your Telegram ID is <code>{sender_id}</code> - send it to the "
+            "bot owner to request access.",
+        )
         return jsonify(ok=True)
 
     try:
