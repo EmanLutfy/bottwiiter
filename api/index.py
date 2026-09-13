@@ -388,6 +388,16 @@ def catch_all(_path):
         return jsonify(ok=True)
 
     sender_id = (message.get("from") or {}).get("id")
+    # Diagnostic log - shows how many IDs were parsed from
+    # ALLOWED_USER_IDS (never the values themselves) and whether this
+    # specific sender was allowed. If whitelist_count is 0 when you
+    # expect it not to be, the env var isn't reaching this function at
+    # runtime (config/redeploy issue) - that's the first thing to check,
+    # same as the earlier X_AUTH_TOKEN/X_CT0 diagnostic.
+    logger.info(
+        "whitelist check: whitelist_count=%s sender_id=%s allowed=%s",
+        len(_ALLOWED_USER_ID_SET), sender_id, _is_allowed(sender_id),
+    )
     if not _is_allowed(sender_id):
         tg_send_message(
             chat_id,
