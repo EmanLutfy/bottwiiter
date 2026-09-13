@@ -338,7 +338,7 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>Check one of these yourself before trusting it.</i>",
+        "<i>Cek dulu ya satu - satu </i>",
     ]
     return "\n".join(lines)
 
