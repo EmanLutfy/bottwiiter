@@ -34,12 +34,22 @@ Setup (see README.md for the full version):
 
 import html
 import io
+import json
 import logging
 import os
+from typing import Optional
 
 from flask import Flask, jsonify, request
 
-from scraper import ProfileInfo, ProfileNotFound, download_avatar_png, extract_username, fetch_profile
+from scraper import (
+    ProfileInfo,
+    ProfileNotFound,
+    download_avatar_png,
+    extract_username,
+    fetch_profile,
+    guess_domain_website,
+    slugify,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -66,28 +76,82 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 import requests  # noqa: E402
 
 
-def tg_send_message(chat_id, text, parse_mode="HTML"):
+def tg_send_message(chat_id, text, parse_mode="HTML", reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
-            timeout=8,
-        )
+        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=8)
     except Exception:  # noqa: BLE001
         logger.exception("Failed to sendMessage to chat_id=%s", chat_id)
 
 
-def tg_send_photo(chat_id, photo_bytes: io.BytesIO, caption, parse_mode="HTML"):
+def tg_send_photo(chat_id, photo_bytes: io.BytesIO, caption, parse_mode="HTML", reply_markup=None):
     photo_bytes.seek(0)
+    data = {"chat_id": chat_id, "caption": caption, "parse_mode": parse_mode}
+    if reply_markup:
+        # sendPhoto is sent as multipart/form-data (because of the file),
+        # so reply_markup has to be JSON-encoded into a plain string field
+        # here, unlike sendMessage's JSON body above where a nested dict
+        # is fine as-is.
+        data["reply_markup"] = json.dumps(reply_markup)
     try:
         requests.post(
             f"{TELEGRAM_API}/sendPhoto",
-            data={"chat_id": chat_id, "caption": caption, "parse_mode": parse_mode},
+            data=data,
             files={"photo": ("logo.png", photo_bytes, "image/png")},
             timeout=15,
         )
     except Exception:  # noqa: BLE001
         logger.exception("Failed to sendPhoto to chat_id=%s", chat_id)
+
+
+def tg_answer_callback_query(callback_query_id, text=None):
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    try:
+        requests.post(f"{TELEGRAM_API}/answerCallbackQuery", json=payload, timeout=8)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to answerCallbackQuery id=%s", callback_query_id)
+
+
+def tg_edit_message_reply_markup(chat_id, message_id, reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reply_markup": reply_markup or {"inline_keyboard": []},
+    }
+    try:
+        requests.post(f"{TELEGRAM_API}/editMessageReplyMarkup", json=payload, timeout=8)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to editMessageReplyMarkup chat_id=%s message_id=%s", chat_id, message_id)
+
+
+# Max length Telegram allows for a button's callback_data, in bytes. Kept
+# well under that (see _domain_guess_callback_data below) so the
+# username + a slugified display name both fit comfortably.
+_CALLBACK_DATA_MAX_BYTES = 64
+
+
+def _domain_guess_callback_data(username: str, name: Optional[str]) -> str:
+    name_slug = (slugify(name) or "")[:30]
+    data = f"dg:{username}:{name_slug}"
+    # Simple truncation is fine here - worst case we lose a few characters
+    # of the name slug, which just narrows the guess slightly rather than
+    # breaking anything.
+    return data[:_CALLBACK_DATA_MAX_BYTES]
+
+
+def _domain_guess_button(username: str, name: Optional[str]) -> dict:
+    return {
+        "inline_keyboard": [[
+            {
+                "text": "🔍 Force-check a domain",
+                "callback_data": _domain_guess_callback_data(username, name),
+            }
+        ]]
+    }
 
 
 def _html_escape(text: str) -> str:
@@ -163,15 +227,85 @@ def handle_text_message(chat_id: int, text: str) -> None:
 
     caption = build_caption(profile, username)
 
+    # Only offer the "force-check a domain" button when no website was
+    # found any other way - if one was already found (X's own data, or
+    # even the bio-text fallback), there's nothing to guess.
+    reply_markup = None
+    if not profile.website:
+        reply_markup = _domain_guess_button(profile.username, profile.name)
+
     if profile.avatar_url:
         try:
             png_bytes = download_avatar_png(profile.avatar_url)
-            tg_send_photo(chat_id, png_bytes, caption)
+            tg_send_photo(chat_id, png_bytes, caption, reply_markup=reply_markup)
             return
         except Exception:  # noqa: BLE001
             logger.exception("Failed to download/send avatar for %s", username)
 
-    tg_send_message(chat_id, caption + "\n\n<i>(couldn't download the logo)</i>")
+    tg_send_message(
+        chat_id,
+        caption + "\n\n<i>(couldn't download the logo)</i>",
+        reply_markup=reply_markup,
+    )
+
+
+def handle_callback_query(callback_query: dict) -> None:
+    """
+    Handles a tap on the "Force-check a domain" button (see
+    _domain_guess_button above). Guessing a domain is deliberately NOT
+    part of the automatic fetch_profile() chain - it's a genuine guess
+    (probing common TLDs for the account's name), not data read from X,
+    and testing showed real false-positive risk (parked/for-sale domains,
+    or an unrelated company that just happens to share the name). Keeping
+    it behind an explicit button means it only ever runs when someone
+    consciously asks for it, and the result is always labeled as a guess.
+    """
+    callback_id = callback_query.get("id")
+    data = callback_query.get("data", "") or ""
+    message = callback_query.get("message", {}) or {}
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    if not data.startswith("dg:"):
+        tg_answer_callback_query(callback_id)
+        return
+
+    parts = data.split(":", 2)
+    username = parts[1] if len(parts) > 1 else ""
+    name_slug = parts[2] if len(parts) > 2 else ""
+
+    # Ack immediately (Telegram shows a small loading spinner on the
+    # button until this is called) and remove the button right away so
+    # it can't be tapped again while the probe is still running.
+    tg_answer_callback_query(callback_id, text="Checking domains...")
+    if chat_id is not None and message_id is not None:
+        tg_edit_message_reply_markup(chat_id, message_id, reply_markup=None)
+
+    if not username:
+        return
+
+    try:
+        guessed = guess_domain_website(username, name_slug or None)
+    except Exception:  # noqa: BLE001
+        logger.exception("guess_domain_website crashed for %s", username)
+        guessed = None
+
+    if chat_id is None:
+        return
+
+    if guessed:
+        result_text = (
+            f"🔍 Domain guess for <code>@{_html_escape(username)}</code>:\n"
+            f"<code>{_html_escape(guessed)}</code>\n\n"
+            f"<i>This is a guess based on the name, not data read from X - "
+            f"double-check it's really theirs before trusting it.</i>"
+        )
+    else:
+        result_text = (
+            f"🔍 Domain guess for <code>@{_html_escape(username)}</code>: "
+            f"<i>no active domain found.</i>"
+        )
+    tg_send_message(chat_id, result_text)
 
 
 @app.route("/", defaults={"_path": ""}, methods=["GET", "POST"])
@@ -187,9 +321,18 @@ def catch_all(_path):
             return jsonify(ok=False), 403
 
     update = request.get_json(silent=True) or {}
+
+    callback_query = update.get("callback_query")
+    if callback_query:
+        try:
+            handle_callback_query(callback_query)
+        except Exception:  # noqa: BLE001
+            logger.exception("Uncaught error while processing callback_query")
+        return jsonify(ok=True)
+
     message = update.get("message") or update.get("edited_message")
     if not message:
-        # Other update types (e.g. callback_query, channel_post) - just ignore them.
+        # Other update types (e.g. channel_post) - just ignore them.
         return jsonify(ok=True)
 
     chat_id = message.get("chat", {}).get("id")
