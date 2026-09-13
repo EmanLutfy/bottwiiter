@@ -47,7 +47,7 @@ from scraper import (
     download_avatar_png,
     extract_username,
     fetch_profile,
-    guess_domain_website,
+    probe_domain_candidates,
     slugify,
 )
 
@@ -285,27 +285,43 @@ def handle_callback_query(callback_query: dict) -> None:
         return
 
     try:
-        guessed = guess_domain_website(username, name_slug or None)
+        candidates = probe_domain_candidates(username, name_slug or None)
     except Exception:  # noqa: BLE001
-        logger.exception("guess_domain_website crashed for %s", username)
-        guessed = None
+        logger.exception("probe_domain_candidates crashed for %s", username)
+        candidates = []
 
     if chat_id is None:
         return
 
-    if guessed:
-        result_text = (
-            f"🔍 Domain guess for <code>@{_html_escape(username)}</code>:\n"
-            f"<code>{_html_escape(guessed)}</code>\n\n"
-            f"<i>This is a guess based on the name, not data read from X - "
-            f"double-check it's really theirs before trusting it.</i>"
+    tg_send_message(chat_id, _build_domain_check_report(username, candidates))
+
+
+_STATUS_ICON = {"live": "✅", "parked": "⚠️", "dead": "❌"}
+
+
+def _build_domain_check_report(username: str, candidates: list) -> str:
+    if not candidates:
+        return (
+            f"🔍 Domain check for <code>@{_html_escape(username)}</code>: "
+            f"<i>couldn't build any domain candidates.</i>"
         )
-    else:
-        result_text = (
-            f"🔍 Domain guess for <code>@{_html_escape(username)}</code>: "
-            f"<i>no active domain found.</i>"
-        )
-    tg_send_message(chat_id, result_text)
+
+    lines = [f"🔍 Domain check for <code>@{_html_escape(username)}</code>:", ""]
+    for domain, status, url in candidates:
+        icon = _STATUS_ICON.get(status, "❌")
+        line = f"{icon} <code>{_html_escape(domain)}</code>"
+        if status == "live":
+            line += f" — {_html_escape(url)}"
+        elif status == "parked":
+            line += " — parked/for sale"
+        lines.append(line)
+
+    lines += [
+        "",
+        "<i>These are guesses based on the name, not data read from X - "
+        "check the ✅ ones yourself before trusting any of them.</i>",
+    ]
+    return "\n".join(lines)
 
 
 @app.route("/", defaults={"_path": ""}, methods=["GET", "POST"])
