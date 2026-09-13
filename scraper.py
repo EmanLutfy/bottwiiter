@@ -678,7 +678,7 @@ def _extract_url_from_text(text: str) -> Optional[str]:
 # TLDs to try, in this order, when guessing a domain. Order matters only
 # for which candidate wins when more than one resolves - all candidates
 # are still probed concurrently, not one-by-one.
-GUESS_TLDS = [".xyz", ".com", ".fun", ".io", ".space", ".tech", ".family"]
+GUESS_TLDS = [".xyz", ".com", ".fun", ".io", ".space", ".tech", ".family", ".online"]
 
 # Snippets that suggest a domain is just parked/for-sale rather than a
 # real site for this account - used to avoid confidently reporting a
