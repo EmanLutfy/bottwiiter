@@ -50,6 +50,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 from PIL import Image
@@ -716,14 +717,40 @@ def _looks_like_parking_page(body: str) -> bool:
     return any(marker in lowered for marker in _PARKING_PAGE_MARKERS)
 
 
+def _same_domain_family(probed_domain: str, final_host: Optional[str]) -> bool:
+    """
+    True if final_host is the probed domain itself, "www." + it, or a
+    subdomain of it (e.g. app.loro.com) - i.e. still genuinely "their"
+    domain after following redirects.
+
+    False means the domain redirected somewhere else ENTIRELY - most
+    commonly a domain broker's own marketing site (e.g. loro.com ->
+    mediaoptions.com) when the domain is actually for sale. Keyword
+    matching (_looks_like_parking_page) can't catch every broker by name
+    (mediaoptions, hugedomains, afternic, ...), but a cross-domain
+    redirect like this is a reliable enough signal on its own regardless
+    of which broker it is.
+    """
+    if not final_host:
+        return False
+    final_host = final_host.lower().rstrip(".")
+    probed_domain = probed_domain.lower()
+    return final_host == probed_domain or final_host.endswith("." + probed_domain)
+
+
 def _probe_domain(domain: str) -> tuple[str, Optional[str]]:
     """
     Checks whether https://{domain} resolves to a page, and what kind.
     Returns (status, url):
-      - ("live", final_url)   - resolves, and doesn't look parked/for-sale
-      - ("parked", final_url) - resolves, but looks like a parking/
-                                 for-sale page (see _looks_like_parking_page)
-      - ("dead", None)        - doesn't resolve / times out / errors / 4xx+
+      - ("live", final_url)       - resolves, stays on the same domain
+                                     family, and doesn't look parked/for-sale
+      - ("parked", final_url)     - resolves, but looks like a parking/
+                                     for-sale page (see _looks_like_parking_page)
+      - ("redirected", final_url) - resolves, but redirects OFF to a totally
+                                     different domain (see _same_domain_family)
+                                     - can't be trusted as "their" site even
+                                     though it technically "resolves"
+      - ("dead", None)            - doesn't resolve / times out / errors / 4xx+
     Deliberately HTTPS-only and a short timeout - this runs as part of a
     concurrent batch of probes (see probe_domain_candidates), so keeping
     each probe cheap matters for staying inside a serverless function's
@@ -737,6 +764,9 @@ def _probe_domain(domain: str) -> tuple[str, Optional[str]]:
             allow_redirects=True,
         )
         if resp.status_code < 400:
+            final_host = urlparse(resp.url).hostname
+            if not _same_domain_family(domain, final_host):
+                return ("redirected", resp.url)
             if _looks_like_parking_page(resp.text[:3000]):
                 return ("parked", resp.url)
             return ("live", resp.url)
