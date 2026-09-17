@@ -167,8 +167,27 @@ def _domain_guess_button(username: str, name: Optional[str]) -> dict:
     return {
         "inline_keyboard": [[
             {
-                "text": " 🙈 Force/Guess Website",
+                "text": "🔍 Force Website",
                 "callback_data": _domain_guess_callback_data(username, name),
+            }
+        ]]
+    }
+
+
+def _domain_guess_all_callback_data(username: str, name_slug: str) -> str:
+    # name_slug here is ALREADY slugified (it comes straight from the "dg:"
+    # callback_data we just parsed), so unlike _domain_guess_callback_data
+    # above there's no need to slugify it again.
+    data = f"dgall:{username}:{name_slug}"
+    return data[:_CALLBACK_DATA_MAX_BYTES]
+
+
+def _domain_guess_all_button(username: str, name_slug: str) -> dict:
+    return {
+        "inline_keyboard": [[
+            {
+                "text": "📋 Show All",
+                "callback_data": _domain_guess_all_callback_data(username, name_slug),
             }
         ]]
     }
@@ -271,20 +290,37 @@ def handle_text_message(chat_id: int, text: str) -> None:
 
 def handle_callback_query(callback_query: dict) -> None:
     """
-    Handles a tap on the "Force-check a domain" button (see
-    _domain_guess_button above). Guessing a domain is deliberately NOT
-    part of the automatic fetch_profile() chain - it's a genuine guess
-    (probing common TLDs for the account's name), not data read from X,
-    and testing showed real false-positive risk (parked/for-sale domains,
-    or an unrelated company that just happens to share the name). Keeping
-    it behind an explicit button means it only ever runs when someone
-    consciously asks for it, and the result is always labeled as a guess.
+    Handles a tap on either:
+      - "🔍 Force Website" (callback_data "dg:...", see _domain_guess_button
+        above) - runs the probe and shows a SHORT summary (X/Y aktif, live
+        domains only) plus a "Show All" button.
+      - "📋 Show All" (callback_data "dgall:...", see _domain_guess_all_button
+        above) - re-runs the probe and sends the FULL list (every domain,
+        every status), no summary this time.
+
+    Guessing a domain is deliberately NOT part of the automatic
+    fetch_profile() chain - it's a genuine guess (probing common TLDs for
+    the account's name), not data read from X, and testing showed real
+    false-positive risk (parked/for-sale domains, or an unrelated company
+    that just happens to share the name). Keeping it behind an explicit
+    button means it only ever runs when someone consciously asks for it,
+    and the result is always labeled as a guess.
+
+    Note: because this is a stateless serverless function, "Show All" is
+    implemented by simply re-running the probe rather than caching the
+    first run's results anywhere - simplest option, at the cost of an
+    extra probe round-trip (and a small chance results shift slightly
+    between the two taps if a site went up/down in between).
     """
     callback_id = callback_query.get("id")
     data = callback_query.get("data", "") or ""
     message = callback_query.get("message", {}) or {}
     chat_id = message.get("chat", {}).get("id")
     message_id = message.get("message_id")
+
+    if data.startswith("dgall:"):
+        _handle_domain_guess_show_all(callback_id, chat_id, message_id, data)
+        return
 
     if not data.startswith("dg:"):
         tg_answer_callback_query(callback_id)
@@ -313,10 +349,70 @@ def handle_callback_query(callback_query: dict) -> None:
     if chat_id is None:
         return
 
+    summary = _build_domain_summary_report(username, candidates)
+    # Only offer "Show All" if there was anything to probe in the first
+    # place - no point showing it for an empty candidate list.
+    show_all_markup = (
+        _domain_guess_all_button(username, name_slug) if candidates else None
+    )
+    tg_send_message(chat_id, summary, reply_markup=show_all_markup)
+
+
+def _handle_domain_guess_show_all(callback_id, chat_id, message_id, data: str) -> None:
+    parts = data.split(":", 2)
+    username = parts[1] if len(parts) > 1 else ""
+    name_slug = parts[2] if len(parts) > 2 else ""
+
+    tg_answer_callback_query(callback_id, text="Loading full list...")
+    if chat_id is not None and message_id is not None:
+        tg_edit_message_reply_markup(chat_id, message_id, reply_markup=None)
+
+    if not username or chat_id is None:
+        return
+
+    try:
+        candidates = probe_domain_candidates(username, name_slug or None)
+    except Exception:  # noqa: BLE001
+        logger.exception("probe_domain_candidates (show-all) crashed for %s", username)
+        candidates = []
+
     tg_send_message(chat_id, _build_domain_check_report(username, candidates))
 
 
 _STATUS_ICON = {"live": "✅", "parked": "⚠️", "dead": "❌"}
+
+
+def _build_domain_summary_report(username: str, candidates: list) -> str:
+    """Short version shown right after "Force Website" is tapped: just the
+    active/total count plus the live domains (green only) - see
+    _build_domain_check_report below for the full list shown after "Show
+    All" is tapped."""
+    if not candidates:
+        return (
+            f"🔍 Domain check for <code>@{_html_escape(username)}</code>: "
+            f"<i>couldn't build any domain candidates.</i>"
+        )
+
+    total = len(candidates)
+    live = [c for c in candidates if c[1] == "live"]
+
+    lines = [
+        f"🔍 Domain check for <code>@{_html_escape(username)}</code>: "
+        f"<b>{len(live)}/{total} aktif</b>",
+        "",
+    ]
+
+    if live:
+        for domain, _status, url in live:
+            lines.append(f"✅ <code>{_html_escape(domain)}</code> — {_html_escape(url)}")
+    else:
+        lines.append("<i>Tiada domain live dijumpai.</i>")
+
+    lines += [
+        "",
+        "<i>Check one of these yourself before trusting it.</i>",
+    ]
+    return "\n".join(lines)
 
 
 def _build_domain_check_report(username: str, candidates: list) -> str:
@@ -338,7 +434,7 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>Cek dulu ya satu - satu </i>",
+        "<i>Check one of these yourself before trusting it.</i>",
     ]
     return "\n".join(lines)
 
