@@ -678,7 +678,14 @@ def _extract_url_from_text(text: str) -> Optional[str]:
 # TLDs to try, in this order, when guessing a domain. Order matters only
 # for which candidate wins when more than one resolves - all candidates
 # are still probed concurrently, not one-by-one.
-GUESS_TLDS = [".xyz", ".com", ".fun", ".io", ".space", ".tech", ".family", ".online"]
+GUESS_TLDS = [
+    ".xyz", ".com", ".fun", ".io", ".space", ".tech", ".family", ".online",
+    # Web3/crypto-project TLDs added on request - common domains for
+    # token/DAO/DeFi-style projects that don't fit the general-purpose set above.
+    ".org", ".co", ".fi", ".network", ".app", ".dev", ".finance", ".money",
+    ".capital", ".exchange", ".market", ".markets", ".dao", ".gg", ".world",
+    ".live",
+]
 
 # Snippets that suggest a domain is just parked/for-sale rather than a
 # real site for this account - used to avoid confidently reporting a
