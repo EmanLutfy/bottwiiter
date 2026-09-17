@@ -167,7 +167,7 @@ def _domain_guess_button(username: str, name: Optional[str]) -> dict:
     return {
         "inline_keyboard": [[
             {
-                "text": "🔍 Force Website",
+                "text": "Force/Guess Website 🙈",
                 "callback_data": _domain_guess_callback_data(username, name),
             }
         ]]
@@ -410,7 +410,7 @@ def _build_domain_summary_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>Check one of these yourself before trusting it.</i>",
+        "<i>Cek dulu satu - satu ya 👀</i>",
     ]
     return "\n".join(lines)
 
@@ -434,7 +434,7 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
 
     lines += [
         "",
-        "<i>Check one of these yourself before trusting it.</i>",
+        "<i>Cek dulu satu - satu ya 👀</i>",
     ]
     return "\n".join(lines)
 
