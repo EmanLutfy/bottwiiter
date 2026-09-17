@@ -167,7 +167,7 @@ def _domain_guess_button(username: str, name: Optional[str]) -> dict:
     return {
         "inline_keyboard": [[
             {
-                "text": "Force/Guess Website 🙈",
+                "text": "Force/Guess website 🙈",
                 "callback_data": _domain_guess_callback_data(username, name),
             }
         ]]
@@ -379,7 +379,7 @@ def _handle_domain_guess_show_all(callback_id, chat_id, message_id, data: str) -
     tg_send_message(chat_id, _build_domain_check_report(username, candidates))
 
 
-_STATUS_ICON = {"live": "✅", "parked": "⚠️", "dead": "❌"}
+_STATUS_ICON = {"live": "✅", "parked": "⚠️", "redirected": "🔀", "dead": "❌"}
 
 
 def _build_domain_summary_report(username: str, candidates: list) -> str:
@@ -430,6 +430,8 @@ def _build_domain_check_report(username: str, candidates: list) -> str:
             line += f" — {_html_escape(url)}"
         elif status == "parked":
             line += " — parked/for sale"
+        elif status == "redirected":
+            line += f" — redirect ke domain lain: {_html_escape(url)}"
         lines.append(line)
 
     lines += [
